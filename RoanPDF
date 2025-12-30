@@ -1,0 +1,82 @@
+const express = require("express");
+const multer = require("multer");
+const fs = require("fs");
+const { PDFDocument } = require("pdf-lib");
+const { exec } = require("child_process");
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "100mb" }));
+
+const upload = multer({ dest: "uploads/", limits: { fileSize: Infinity } });
+
+// Unir PDFs
+app.post("/merge", upload.array("pdfs"), async (req, res) => {
+  try {
+    const mergedPdf = await PDFDocument.create();
+    for (const file of req.files) {
+      const pdfBytes = fs.readFileSync(file.path);
+      const pdf = await PDFDocument.load(pdfBytes);
+      const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      copiedPages.forEach(page => mergedPdf.addPage(page));
+      fs.unlinkSync(file.path);
+    }
+    const outputPath = `uploads/merged_${Date.now()}.pdf`;
+    fs.writeFileSync(outputPath, await mergedPdf.save());
+    res.download(outputPath, "merged.pdf");
+  } catch (err) {
+    res.status(500).send("Error al unir PDFs: " + err.message);
+  }
+});
+
+// Eliminar páginas
+app.post("/delete-pages", upload.single("pdf"), async (req, res) => {
+  const { pagesToRemove } = req.body;
+  try {
+    const pdfBytes = fs.readFileSync(req.file.path);
+    const pdf = await PDFDocument.load(pdfBytes);
+    const newPdf = await PDFDocument.create();
+    pdf.getPageIndices().forEach((i) => {
+      if (!pagesToRemove.includes(i)) {
+        const [copied] = newPdf.copyPages(pdf, [i]);
+        newPdf.addPage(copied);
+      }
+    });
+    const outputPath = `uploads/edited_${Date.now()}.pdf`;
+    fs.writeFileSync(outputPath, await newPdf.save());
+    fs.unlinkSync(req.file.path);
+    res.download(outputPath, "edited.pdf");
+  } catch (err) {
+    res.status(500).send("Error al eliminar páginas: " + err.message);
+  }
+});
+
+// Comprimir PDF (Ghostscript debe estar instalado en el servidor)
+app.post("/compress", upload.single("pdf"), (req, res) => {
+  const inputPath = req.file.path;
+  const outputPath = `uploads/compressed_${Date.now()}.pdf`;
+  const gsCommand = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dNOPAUSE -dBATCH -sOutputFile=${outputPath} ${inputPath}`;
+  exec(gsCommand, (err) => {
+    if (err) return res.status(500).send("Error al comprimir: " + err.message);
+    fs.unlinkSync(inputPath);
+    res.download(outputPath, "compressed.pdf");
+  });
+});
+
+app.listen(5000, () => console.log("Backend corriendo en http://localhost:5000"));
+
+{
+  "name": "roanpdf-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5",
+    "pdf-lib": "^1.19.0",
+    "cors": "^2.8.5"
+  }
+}
